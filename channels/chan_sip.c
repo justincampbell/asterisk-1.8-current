@@ -7779,39 +7779,60 @@ static const char *find_alias(const char *name, const char *_default)
 
 static const char *__get_header(const struct sip_request *req, const char *name, int *start)
 {
-	/*
-	 * Technically you can place arbitrary whitespace both before and after the ':' in
-	 * a header, although RFC3261 clearly says you shouldn't before, and place just
-	 * one afterwards.  If you shouldn't do it, what absolute idiot decided it was
-	 * a good idea to say you can do it, and if you can do it, why in the hell would.
-	 * you say you shouldn't.
-	 * Anyways, pedanticsipchecking controls whether we allow spaces before ':',
-	 * and we always allow spaces after that for compatibility.
-	 */
-	const char *sname = find_alias(name, NULL);
-	int x, len = strlen(name), slen = (sname ? 1 : 0);
-	for (x = *start; x < req->headers; x++) {
-		const char *header = REQ_OFFSET_TO_STR(req, header[x]);
-		int smatch = 0, match = !strncasecmp(header, name, len);
-		if (slen) {
-			smatch = !strncasecmp(header, sname, slen);
-		}
-		if (match || smatch) {
-			/* skip name */
-			const char *r = header + (match ? len : slen );
-			if (sip_cfg.pedanticsipchecking) {
-				r = ast_skip_blanks(r);
-			}
+        int pass;
+        int authCount = 0; // used for authorization logging debugging
+        char *retval;
 
-			if (*r == ':') {
-				*start = x+1;
-				return ast_skip_blanks(r+1);
-			}
-		}
-	}
+        retval = "";
 
-	/* Don't return NULL, so get_header is always a valid pointer */
-	return "";
+        /*
+         * Technically you can place arbitrary whitespace both before and after the ':' in
+         * a header, although RFC3261 clearly says you shouldn't before, and place just
+         * one afterwards.  If you shouldn't do it, what absolute idiot decided it was
+         * a good idea to say you can do it, and if you can do it, why in the hell would.
+         * you say you shouldn't.
+         * Anyways, pedanticsipchecking controls whether we allow spaces before ':',
+         * and we always allow spaces after that for compatibility.
+         */
+        for (pass = 0; name && pass < 2; pass++) {
+                int x, len = strlen(name);
+                for (x = *start; x < req->headers; x++) {
+                        const char *header = REQ_OFFSET_TO_STR(req, header[x]);
+                        if (!strncasecmp(header, name, len)) {
+                                const char *r = header + len;   /* skip name */
+                                if (sip_cfg.pedanticsipchecking)
+                                        r = ast_skip_blanks(r);
+
+                                if (*r == ':') {
+                                        *start = x+1;
+                                        retval = ast_skip_blanks(r+1);
+
+                                        // if we're not looking for an Authorization header return immediately,
+                                        // but if it is keep looking so we return the last Authorization header.
+                                        // before the patch the code always returned here.
+                                        if (strncasecmp("Authorization", name, 13) != 0) {
+                                                return retval;
+                                        }
+
+                                        // remainder of if is solely for logging
+                                        authCount++;
+
+                                        if (authCount == 1){
+                                                // first Authorization, output info
+                                                ast_debug(0, "Found First Authorization Header: %s\n", retval);
+                                        } else{
+                                                // secondary Authorization, output warning
+                                                ast_log(LOG_WARNING, "Found Authorization Header #%i: %s\n", authCount, retval);
+                                        }
+                                }
+                        }
+                }
+                if (pass == 0) /* Try aliases */
+                        name = find_alias(name, NULL);
+        }
+
+        /* Don't return NULL, so get_header is always a valid pointer */
+        return retval; // used to return ""
 }
 
 /*! \brief Get header from SIP request
